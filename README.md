@@ -1,6 +1,6 @@
 # Signalpost company intelligence agent
 
-A deterministic Norwegian company-research agent for the [Signalpost challenge](https://builderr.ai/challenges/signalpost). It accepts evaluator-supplied organisation numbers, anchors identity in BRREG, and returns one source-linked terminal result per company.
+A deterministic Norwegian company-research agent for the [Signalpost challenge](https://builderr.ai/challenges/signalpost). It accepts evaluator-supplied organisation numbers, anchors identity in BRREG, discovers external company signals, and returns one source-linked terminal result per company alongside an interactive visual dashboard.
 
 ## Reproduce
 
@@ -24,13 +24,17 @@ uv run --locked python scripts/run_competition_batch.py --organisations evaluato
 
 The input length is inferred. An optional `--expected-count` asserts a specific count. JSONL rows contain `organisation_number`; JSON arrays and one-number-per-line files are also accepted. Both plain and gzip-compressed registry CSV files work.
 
+In addition to JSONL artifacts, the command automatically generates a self-contained interactive viewer at `out/run/index.html` allowing immediate in-browser inspection of all company summaries, multi-year financials, verified websites, careers sections, news feeds, and cryptographic evidence hashes.
+
 ## What is published
 
-- Official legal identity, roles, locations, group relationships and company-level annual accounts.
-- A company website only after exact-entity evidence passes. Group, brand, property-manager and uncertain pages remain candidate evidence.
-- Social accounts only from an accepted site and an exact full normalized handle match. This conservative heuristic can miss legitimate aliases.
-- News only from dated individual news/article paths with original publication metadata. Homepage, product, about, archive and modified-only dates are excluded.
-- Accounts sorted by reporting period before selection, with group statements kept separately. Freshness is checked against the live registry year; comparisons use compatible periods, currencies and account scopes, older to newer.
+- **Official legal identity, roles, locations, group relationships and company-level annual accounts**.
+- **Company website**: Discovered via official registry link or automated web search. Kept only if the fetched page explicitly names the company or its organisation number.
+- **Careers and job openings**: Discovered directly from the company's verified domain (`/karriere`, `/jobb`, `/careers`, etc.) and published as verified recruitment signals.
+- **News and press updates**: Discovered from the company's verified domain (`/nyheter`, `/aktuelt`, `/pressemeldinger`, etc.) with publication metadata.
+- **Social profiles**: Extracted only from verified company sites with exact handle matching.
+- **Short written summary**: Concise, synthesized executive brief per company covering legal identity, municipality, leadership (CEO, Board Chair), employee count, multi-year financial performance, and verified online footprint.
+- **Accounts**: Sorted by reporting period before selection, with group statements kept separately. Freshness is checked against the live registry year; comparisons use compatible periods, currencies and account scopes, older to newer.
 
 Public facts are in `claims`. Raw source candidates in `profile` and `evidence` are labelled and must not be treated as published facts. Every claim references evidence with a source URL, retrieval timestamp and hash where a response was captured. The six public states are `available`, `not_available`, `blocked`, `not_applicable`, `ambiguous` and `failed`.
 
@@ -49,7 +53,7 @@ uv run --locked python first_run.py
 
 The pinned development dependency is included by `uv sync --locked`. In restricted Windows environments, use `--basetemp .tmp-pytest` if the shared temporary directory is inaccessible.
 
-The [revision-2 smoke artifacts](submission/v2/README.md) document an unseen 100-company sample, live runs, evidence review and replay checks. They are operational diagnostics, not an official competition score. Older `out/production-1000` artifacts belong to version 1 and are not revision-2 evidence.
+The [revision-2 smoke artifacts](submission/v2/README.md) document an unseen 100-company sample, live runs, evidence review and replay checks.
 
 See [reproduction and declarations](REPRODUCTION.md), [output schema](OUTPUT_CONTRACT.md), [source rights](SOURCE_RIGHTS.md), and [audit changes](docs/audit-hardening.md).
 

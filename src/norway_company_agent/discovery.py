@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import base64
+import json
+import os
 import re
 import unicodedata
 import urllib.parse
+import urllib.request
 from typing import Any
 
-from .website import normalize_homepage
+from bs4 import BeautifulSoup
+from .website import normalize_homepage, USER_AGENT
 
 
 BLOCKED_DISCOVERY_HOSTS = {
     "proff.no", "purehelp.no", "1881.no", "gulesider.no", "firmalisten.no", "companywall.no",
     "firmadatabasen.no", "sokfirma.no", "yra.no", "northdata.com", "nor47business.com",
     "linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com", "youtube.com", "tiktok.com",
+    "wikipedia.org", "opencorporates.com", "opencorpdata.com", "eintaxid.com", "b2bhint.com", "brreg.no",
+    "dnb.com", "21st.ai", "infobelpro.com", "biztrac.no", "allabolag.se", "eiendomspriser.no",
+    "regnskapstall.no", "blomster.no", "api1881.no", "fonecta1881group.no", "hjemmesidehuset.no",
 }
 GENERIC_NAME_TOKENS = {"as", "asa", "ans", "da", "enk", "sa", "nuf", "company", "norge", "norway", "gruppen", "group"}
 
@@ -71,6 +79,7 @@ def score_search_candidate(profile: dict[str, Any], result: dict[str, Any]) -> d
     all_name_tokens = bool(name_tokens and set(name_tokens).issubset(evidence_tokens))
     all_name_tokens_in_title = bool(name_tokens and set(name_tokens).issubset(set(title_tokens)))
     name_in_host = bool(name_compact and name_compact in host_compact)
+    any_token_in_host = bool(name_tokens and any(t in host_compact for t in name_tokens))
     municipality_match = bool(municipality_tokens and municipality_tokens <= set(snippet_tokens))
     score = 0.0
     reasons = []
@@ -90,9 +99,6 @@ def score_search_candidate(profile: dict[str, Any], result: dict[str, Any]) -> d
         score += 0.1
         reasons.append("registry municipality appears in result snippet")
     score = min(score, 1.0)
-    # Registry/directory pages routinely reproduce both the legal name and org
-    # number. A candidate must therefore also have the distinctive company name
-    # in its hostname before it is worth crawling as a company-owned website.
     publishable_candidate = score >= 0.75 and name_in_host and (org_match or all_name_tokens_in_title)
     return {
         "status": "accepted_for_crawl" if publishable_candidate else "review" if score >= 0.6 else "rejected",
@@ -118,3 +124,127 @@ def choose_search_candidate(profile: dict[str, Any], results: list[dict[str, Any
         "abstained": not accepted,
         "policy": "A search result is only a crawl candidate. Publication still requires fetched-page exact-entity verification.",
     }
+
+
+def _search_1881(query: str, *, timeout: float = 6.0) -> list[str]:
+    url = f"https://www.1881.no/?query={urllib.parse.quote(query)}"
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    candidates: list[str] = []
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            soup = BeautifulSoup(response.read(), "html.parser")
+            for a in soup.select("a[href]"):
+                href = str(a.get("href") or "").strip()
+                text = a.get_text(strip=True)
+                if not href.startswith("http"):
+                    continue
+                parsed = urllib.parse.urlparse(href)
+                host = (parsed.hostname or "").lower().removeprefix("www.")
+                if any(host == b or host.endswith("." + b) for b in BLOCKED_DISCOVERY_HOSTS):
+                    continue
+                if text.startswith("www.") or text.startswith("http") or "hjemmeside" in text.lower() or "nettside" in text.lower():
+                    clean = f"{parsed.scheme}://{parsed.netloc}/"
+                    if clean not in candidates:
+                        candidates.append(clean)
+    except Exception:
+        pass
+    return candidates
+
+
+def _decode_bing_url(href: str) -> str | None:
+    match = re.search(r"[?&]u=a1([A-Za-z0-9+/=_-]+)", href)
+    if match:
+        b64 = match.group(1).replace("-", "+").replace("_", "/")
+        pad = "=" * (-len(b64) % 4)
+        try:
+            return base64.b64decode(b64 + pad).decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    if href.startswith("http") and "bing.com" not in href:
+        return href
+    return None
+
+
+def _search_bing(query: str, *, timeout: float = 6.0, limit: int = 4) -> list[dict[str, Any]]:
+    url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    candidates: list[dict[str, Any]] = []
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            soup = BeautifulSoup(response.read(), "html.parser")
+            for li in soup.select("li.b_algo"):
+                a = li.select_one("h2 a")
+                if not a:
+                    continue
+                actual_url = _decode_bing_url(str(a.get("href") or ""))
+                if not actual_url:
+                    continue
+                parsed = urllib.parse.urlparse(actual_url)
+                host = (parsed.hostname or "").lower().removeprefix("www.")
+                if any(host == b or host.endswith("." + b) for b in BLOCKED_DISCOVERY_HOSTS):
+                    continue
+                title = a.get_text(" ", strip=True)
+                snippet_el = li.select_one(".b_caption p, .b_snippet")
+                snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
+                clean = f"{parsed.scheme}://{parsed.netloc}/"
+                if clean not in [c["url"] for c in candidates]:
+                    candidates.append({"url": clean, "title": title, "snippet": snippet, "rank": len(candidates) + 1, "provider": "bing"})
+                if len(candidates) >= limit:
+                    break
+    except Exception:
+        pass
+    return candidates
+
+
+def search_company_website_candidates(profile: dict[str, Any], *, timeout: float = 8.0, limit: int = 4) -> list[str]:
+    """Search for plausible company website homepage URLs without requiring a paid API key."""
+    org = re.sub(r"\D", "", str(profile.get("organisation_number") or ""))
+    name = " ".join(str(profile.get("name") or "").split())
+    municipality = " ".join(str(profile.get("municipality") or "").split())
+
+    candidates: list[str] = []
+
+    # 1. Check authoritative Norwegian business index (1881.no) by organisation number
+    if org:
+        for url in _search_1881(org, timeout=timeout):
+            if url not in candidates:
+                candidates.append(url)
+            if len(candidates) >= limit:
+                return candidates
+
+    # 2. Check 1881 by exact name if org lookup yielded no candidate
+    if not candidates and name:
+        for url in _search_1881(name, timeout=timeout):
+            if url not in candidates:
+                candidates.append(url)
+            if len(candidates) >= limit:
+                return candidates
+
+    # 3. Optional Brave Search API if key provided in environment
+    api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+    if api_key and not candidates:
+        try:
+            brave_url = f"https://api.search.brave.com/res/v1/web/search?q={urllib.parse.quote(f'\"{name}\" {org}')}&count=5&country=no"
+            req = urllib.request.Request(brave_url, headers={"Accept": "application/json", "X-Subscription-Token": api_key, "User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                for item in parse_brave_web_results(data, query=name):
+                    u = normalize_homepage(item.get("url"))
+                    if u and u not in candidates:
+                        parsed = urllib.parse.urlparse(u)
+                        host = (parsed.hostname or "").lower().removeprefix("www.")
+                        if not any(host == b or host.endswith("." + b) for b in BLOCKED_DISCOVERY_HOSTS):
+                            candidates.append(u)
+        except Exception:
+            pass
+
+    # 4. Search engine lookup fallback
+    if not candidates and name:
+        query = f'"{name}" {municipality}' if municipality else f'"{name}"'
+        bing_results = _search_bing(query, timeout=timeout, limit=limit)
+        for res in bing_results:
+            u = res.get("url")
+            if u and u not in candidates:
+                candidates.append(u)
+
+    return candidates[:limit]

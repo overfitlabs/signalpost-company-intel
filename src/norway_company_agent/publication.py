@@ -42,6 +42,10 @@ def published_claims(profile: dict, modules: list[str]) -> tuple[list[dict], lis
             add("official_website", value.get("final_url") or record.get("source_url"))
             if value.get("description"):
                 add("business_description", value["description"], classification="company_reported")
+            if value.get("careers_page"):
+                add("careers_page", value["careers_page"], classification="company_careers")
+            if value.get("news_page"):
+                add("news_page", value["news_page"], classification="company_news_overview")
             assessments = {item.get("url"): item for item in value.get("social_link_assessments", [])}
             for link in value.get("social_links") or []:
                 if assessments.get(link.get("url"), {}).get("publishable"):
@@ -60,4 +64,6 @@ def published_claims(profile: dict, modules: list[str]) -> tuple[list[dict], lis
                 claims.append({"field": "annual_accounts", "value": None, "availability": "not_available", "evidence_ids": [evidence_id]})
         else:
             add(module, value)
+            if module == "registry" and profile.get("summary"):
+                add("company_summary", profile["summary"], classification="synthesized_summary")
     return claims, sources

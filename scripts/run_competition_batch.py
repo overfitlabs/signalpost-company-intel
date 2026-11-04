@@ -20,6 +20,9 @@ from norway_company_agent.publication import availability  # noqa: E402
 from norway_company_agent.identity import apply_website_identity_gate  # noqa: E402
 from norway_company_agent.official import fetch_official_modules, assess_financial_freshness, accounting_obligation_assessment  # noqa: E402
 from norway_company_agent.website import fetch_website  # noqa: E402
+from norway_company_agent.discovery import search_company_website_candidates  # noqa: E402
+from norway_company_agent.summary import generate_company_summary  # noqa: E402
+from norway_company_agent.viewer import generate_simple_page  # noqa: E402
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -104,8 +107,29 @@ def main() -> None:
             profile["slettedato"] = live_value.get("slettedato")
         website_metrics = {"requests": 0, "bytes": 0, "latencies_ms": []}
         if "website" in requested_modules:
-            website_record, website_metrics = fetch_website(profile.get("website"))
-            profile["evidence"]["website"] = apply_website_identity_gate(profile, website_record)["website"]
+            current_web_ev = None
+            if profile.get("website"):
+                website_record, website_metrics = fetch_website(profile.get("website"))
+                current_web_ev = apply_website_identity_gate(profile, website_record)["website"]
+            is_pub = bool(((current_web_ev or {}).get("value") or {}).get("identity_assessment", {}).get("publishable"))
+            if not is_pub:
+                candidates = search_company_website_candidates(profile)
+                for cand_url in candidates:
+                    cand_rec, cand_metrics = fetch_website(cand_url)
+                    website_metrics["requests"] += cand_metrics.get("requests", 0)
+                    website_metrics["bytes"] += cand_metrics.get("bytes", 0)
+                    website_metrics["latencies_ms"].extend(cand_metrics.get("latencies_ms", []))
+                    if cand_rec.get("status") == "available":
+                        cand_gated = apply_website_identity_gate(profile, cand_rec)["website"]
+                        if bool(((cand_gated.get("value") or {}).get("identity_assessment", {}).get("publishable"))):
+                            current_web_ev = cand_gated
+                            profile["website"] = cand_url
+                            break
+            if current_web_ev:
+                profile["evidence"]["website"] = current_web_ev
+            else:
+                profile["evidence"]["website"] = evidence("website", "not_found", "company_website_discovery", "https://data.brreg.no/enhetsregisteret/api/enheter", note="No verified company website found")
+        profile["summary"] = generate_company_summary(profile)
         metric = {
             "requests": sum(item.requests for item in metrics) + website_metrics["requests"],
             "bytes": sum(item.bytes_received for item in metrics) + website_metrics["bytes"],
@@ -159,6 +183,8 @@ def main() -> None:
         if website_record:
             profile["evidence"]["website"] = apply_website_identity_gate(profile, website_record)["website"]
         assess_financial_freshness(profile)
+        if not profile.get("summary"):
+            profile["summary"] = generate_company_summary(profile)
     previous_by_org = {}
     previous_hash = None
     if args.previous_profiles:
@@ -214,6 +240,8 @@ def main() -> None:
     }
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    html_output = Path(args.output).with_name("index.html")
+    generate_simple_page(envelopes, html_output, run_id=args.run_id, report=report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     raise SystemExit(0 if validation["passed"] else 1)
 

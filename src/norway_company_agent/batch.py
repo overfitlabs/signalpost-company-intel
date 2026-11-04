@@ -16,7 +16,7 @@ TERMINAL_STATES = STATES
 
 def read_organisation_inputs(path: str | Path) -> list[dict[str, Any]]:
     source = Path(path)
-    text = source.read_text(encoding="utf-8")
+    text = source.read_text(encoding="utf-8-sig")
     values: list[Any]
     if source.suffix == ".json":
         body = json.loads(text)
@@ -163,6 +163,7 @@ def terminal_envelope(
         "started_at": started_at,
         "completed_at": completed_at,
         "legal_identity": {key: profile.get(key) for key in ("organisation_number", "name", "legal_form")},
+        "summary": profile.get("summary"),
         "claims": claims,
         "evidence": sources,
         "changes": profile.get("change_history") or [],

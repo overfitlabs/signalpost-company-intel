@@ -20,7 +20,7 @@ import trafilatura
 from .evidence import evidence
 from .news import article_metadata
 
-USER_AGENT = "builderr-signalpost-poc/0.1 (+https://builderr.ai)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (compatible; builderr-signalpost/0.2)"
 SOCIAL_HOSTS = {
     "linkedin.com": "linkedin",
     "facebook.com": "facebook",
@@ -34,7 +34,8 @@ SOCIAL_HOSTS = {
 PRIORITY_TERMS = (
     "om-oss", "om_oss", "about", "kontakt", "contact", "ledelse", "management",
     "team", "people", "locations", "lokasjoner", "avdelinger", "butikker",
-    "news", "press", "aktuelt", "nyheter",
+    "karriere", "jobb", "ledige-stillinger", "stillinger", "careers", "vacancies",
+    "news", "press", "aktuelt", "nyheter", "pressemeldinger",
 )
 
 
@@ -339,6 +340,49 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             elif page_error:
                 crawl_errors.append({"url": page_url, "error": page_error})
         value["pages"] = pages
+        careers_page = None
+        news_page = None
+        for p in pages:
+            u_path = urllib.parse.urlparse(p.get("url", "")).path.lower()
+            p_title = (p.get("title") or "").lower()
+            if not careers_page and re.search(r"\b(karriere|jobb|ledige-stillinger|stillinger|careers|vacancies)\b", u_path + " " + p_title):
+                careers_page = {
+                    "url": p.get("url"),
+                    "title": p.get("title") or "Careers",
+                    "main_text_excerpt": (p.get("main_text_excerpt") or "")[:1500],
+                    "content_sha256": p.get("content_sha256"),
+                }
+            if not news_page and re.search(r"\b(nyheter|aktuelt|presse|pressemeldinger|press|news|blog)\b", u_path + " " + p_title):
+                news_page = {
+                    "url": p.get("url"),
+                    "title": p.get("title") or "News",
+                    "main_text_excerpt": (p.get("main_text_excerpt") or "")[:1500],
+                    "published_at": p.get("published_at"),
+                    "content_sha256": p.get("content_sha256"),
+                }
+        if not careers_page or not news_page:
+            for anchor in soup.select("a[href]"):
+                href = str(anchor.get("href") or "").strip()
+                full_url = urllib.parse.urljoin(final_url, href)
+                parsed_cand = urllib.parse.urlparse(full_url)
+                if parsed_cand.scheme in {"http", "https"} and _registered_domain(full_url) == homepage_domain:
+                    haystack = (parsed_cand.path + " " + anchor.get_text(" ", strip=True)).lower()
+                    if not careers_page and re.search(r"\b(karriere|jobb|ledige-stillinger|stillinger|careers|vacancies)\b", haystack):
+                        careers_page = {
+                            "url": full_url,
+                            "title": anchor.get_text(" ", strip=True) or "Careers",
+                            "main_text_excerpt": "",
+                            "content_sha256": value["content_sha256"],
+                        }
+                    if not news_page and re.search(r"\b(nyheter|aktuelt|presse|pressemeldinger|press|news|blog)\b", haystack):
+                        news_page = {
+                            "url": full_url,
+                            "title": anchor.get_text(" ", strip=True) or "News",
+                            "main_text_excerpt": "",
+                            "content_sha256": value["content_sha256"],
+                        }
+        value["careers_page"] = careers_page
+        value["news_page"] = news_page
         value["social_links"] = list({(item["platform"], item["url"]): item for item in social}.values())
         value["crawl_errors"] = crawl_errors
         return evidence("website", "available", "registry_linked_company_website", final_url, value=value, note="Company-controlled claim layer; not an official registry fact", content_sha256=value["content_sha256"]), {"requests": requests, "bytes": bytes_received, "latencies_ms": page_latencies}

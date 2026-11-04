@@ -40,6 +40,8 @@ htmlcov/
 /brreg-enheter.csv
 /signalpost-universe.jsonl.gz
 /staging/
+entry-companies-active-1000*
+smoke-companies.jsonl
 
 # 7. IDEs and Editors
 .vscode/
